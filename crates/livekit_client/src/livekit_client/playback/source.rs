@@ -1,3 +1,5 @@
+use std::num::NonZero;
+
 use futures::StreamExt;
 use libwebrtc::{audio_stream::native::NativeAudioStream, prelude::AudioFrame};
 use livekit::track::RemoteAudioTrack;
@@ -9,7 +11,11 @@ fn frame_to_samplesbuffer(frame: AudioFrame) -> SamplesBuffer {
     let samples = frame.data.iter().copied();
     let samples = SampleTypeConverter::<_, _>::new(samples);
     let samples: Vec<f32> = samples.collect();
-    SamplesBuffer::new(frame.num_channels as u16, frame.sample_rate, samples)
+    SamplesBuffer::new(
+        NonZero::new(frame.num_channels as u16).expect("audio frame channels is nonzero"),
+        NonZero::new(frame.sample_rate).expect("audio frame sample rate is nonzero"),
+        samples,
+    )
 }
 
 pub struct LiveKitStream {
@@ -63,5 +69,78 @@ impl Source for LiveKitStream {
 
     fn total_duration(&self) -> Option<std::time::Duration> {
         self.inner.total_duration()
+    }
+}
+
+pub trait RodioExt: Source + Sized {
+    fn process_buffer<F>(
+        self,
+        callback: impl FnMut(&mut [rodio::Sample; 200]),
+    ) -> ProcessBuffer<Self, F>
+    where
+        F: FnMut(&mut [rodio::Sample]);
+}
+
+impl<S: Source> RodioExt for S {
+    fn process_buffer<F>(
+        self,
+        callback: impl FnMut(&mut [rodio::Sample; 200]),
+    ) -> ProcessBuffer<Self, F>
+    where
+        F: FnMut(&mut [rodio::Sample]),
+    {
+        ProcessBuffer {
+            inner: self,
+            callback,
+            in_buffer: [0.0; 200],
+            out_buffer: [0.0; 200],
+        }
+    }
+}
+
+pub struct ProcessBuffer<S, F>
+where
+    S: Source + Sized,
+    F: FnMut(&mut [rodio::Sample; 200]),
+{
+    inner: S,
+    callback: F,
+    in_buffer: [rodio::Sample; 200],
+    out_buffer: std::array::IntoIter<rodio::Sample, N>,
+}
+
+impl<S, F> Iterator for ProcessBuffer<S, F>
+where
+    S: Source + Sized,
+    F: FnMut(&mut [rodio::Sample; 200]),
+{
+    type Item = rodio::Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for sample in &mut in_buffer {
+            *sample = self.inner.next()?;
+        }
+    }
+}
+
+impl<S, F> Source for ProcessBuffer<S, F>
+where
+    S: Source + Sized,
+    F: FnMut(&mut [rodio::Sample; 200]),
+{
+    fn current_span_len(&self) -> Option<usize> {
+        todo!()
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        todo!()
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        todo!()
+    }
+
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        todo!()
     }
 }
