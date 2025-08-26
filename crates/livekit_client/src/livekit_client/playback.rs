@@ -265,12 +265,12 @@ impl AudioStack {
         num_channels: u32,
     ) -> Result<()> {
         use crate::livekit_client::playback::source::RodioExt;
-        thread::spawn(|| {
+        thread::spawn(move || {
             let stream = rodio::microphone::MicrophoneBuilder::new()
-                .with_default_device()?
-                .with_default_config()?
+                .default_device()?
+                .default_config()?
                 .open_stream()?;
-            let stream = UniformSourceIterator::new(
+            let mut stream = UniformSourceIterator::new(
                 stream,
                 NonZero::new(1).expect("1 is not zero"),
                 NonZero::new(SAMPLE_RATE).expect("constant is not zero"),
@@ -281,20 +281,28 @@ impl AudioStack {
                 apm.lock()
                     .process_stream(&mut int_buffer, sample_rate as i32, num_channels as i32)
                     .unwrap(); // TODO dvdsk fix this
-                for (sample, processed) in buffer.iter().zip(&int_buffer) {
+                for (sample, processed) in buffer.iter_mut().zip(&int_buffer) {
                     *sample = (*processed).to_sample_();
                 }
             })
             .automatic_gain_control(1.0, 4.0, 0.0, 5.0);
 
             loop {
-                frame_tx.unbounded_send(AudioFrame {
-                    data: Cow::Owned(sampled),
-                    sample_rate,
-                    num_channels,
-                    samples_per_channel: sample_rate / 100,
-                })
+                let sampled = stream.by_ref().take(1000).map(|s| s.to_sample()).collect();
+
+                if frame_tx
+                    .unbounded_send(AudioFrame {
+                        data: Cow::Owned(sampled),
+                        sample_rate,
+                        num_channels,
+                        samples_per_channel: sample_rate / 100,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
+            Ok::<(), anyhow::Error>(())
         });
 
         Ok(())

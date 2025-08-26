@@ -73,27 +73,21 @@ impl Source for LiveKitStream {
 }
 
 pub trait RodioExt: Source + Sized {
-    fn process_buffer<F>(
-        self,
-        callback: impl FnMut(&mut [rodio::Sample; 200]),
-    ) -> ProcessBuffer<Self, F>
+    fn process_buffer<F>(self, callback: F) -> ProcessBuffer<Self, F>
     where
-        F: FnMut(&mut [rodio::Sample]);
+        F: FnMut(&mut [rodio::Sample; 200]);
 }
 
 impl<S: Source> RodioExt for S {
-    fn process_buffer<F>(
-        self,
-        callback: impl FnMut(&mut [rodio::Sample; 200]),
-    ) -> ProcessBuffer<Self, F>
+    fn process_buffer<F>(self, callback: F) -> ProcessBuffer<Self, F>
     where
-        F: FnMut(&mut [rodio::Sample]),
+        F: FnMut(&mut [rodio::Sample; 200]),
     {
         ProcessBuffer {
             inner: self,
             callback,
-            in_buffer: [0.0; 200],
-            out_buffer: [0.0; 200],
+            buffer: [0.0; 200],
+            next: 200,
         }
     }
 }
@@ -105,8 +99,8 @@ where
 {
     inner: S,
     callback: F,
-    in_buffer: [rodio::Sample; 200],
-    out_buffer: std::array::IntoIter<rodio::Sample, N>,
+    buffer: [rodio::Sample; 200],
+    next: usize,
 }
 
 impl<S, F> Iterator for ProcessBuffer<S, F>
@@ -117,30 +111,41 @@ where
     type Item = rodio::Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        for sample in &mut in_buffer {
-            *sample = self.inner.next()?;
+        self.next += 1;
+        if self.next < self.buffer.len() {
+            let sample = self.buffer[self.next];
+            return Some(sample);
         }
+
+        for sample in &mut self.buffer {
+            *sample = self.inner.next()?
+        }
+        (self.callback)(&mut self.buffer);
+
+        self.next = 0;
+        Some(self.buffer[0])
     }
 }
 
+// TODO dvdsk this should be a spanless Source
 impl<S, F> Source for ProcessBuffer<S, F>
 where
     S: Source + Sized,
     F: FnMut(&mut [rodio::Sample; 200]),
 {
     fn current_span_len(&self) -> Option<usize> {
-        todo!()
+        None
     }
 
     fn channels(&self) -> rodio::ChannelCount {
-        todo!()
+        self.inner.channels()
     }
 
     fn sample_rate(&self) -> rodio::SampleRate {
-        todo!()
+        self.inner.sample_rate()
     }
 
     fn total_duration(&self) -> Option<std::time::Duration> {
-        todo!()
+        self.inner.total_duration()
     }
 }
