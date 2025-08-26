@@ -265,6 +265,9 @@ impl AudioStack {
         num_channels: u32,
     ) -> Result<()> {
         use crate::livekit_client::playback::source::RodioExt;
+        const NUM_CHANNELS: usize = 1;
+        const LIVEKIT_BUFFER_SIZE: usize = (SAMPLE_RATE as usize / 100) * NUM_CHANNELS as usize;
+
         thread::spawn(move || {
             let stream = rodio::microphone::MicrophoneBuilder::new()
                 .default_device()?
@@ -276,7 +279,7 @@ impl AudioStack {
                 NonZero::new(SAMPLE_RATE).expect("constant is not zero"),
             )
             .limit(LimitSettings::live_performance())
-            .process_buffer(|buffer| {
+            .process_buffer::<LIVEKIT_BUFFER_SIZE, _>(|buffer| {
                 let mut int_buffer: [i16; _] = buffer.map(|s| s.to_sample());
                 apm.lock()
                     .process_stream(&mut int_buffer, sample_rate as i32, num_channels as i32)
@@ -288,7 +291,11 @@ impl AudioStack {
             .automatic_gain_control(1.0, 4.0, 0.0, 5.0);
 
             loop {
-                let sampled = stream.by_ref().take(1000).map(|s| s.to_sample()).collect();
+                let sampled = stream
+                    .by_ref()
+                    .take(LIVEKIT_BUFFER_SIZE)
+                    .map(|s| s.to_sample())
+                    .collect();
 
                 if frame_tx
                     .unbounded_send(AudioFrame {

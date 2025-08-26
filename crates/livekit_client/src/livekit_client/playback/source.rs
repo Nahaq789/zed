@@ -73,40 +73,40 @@ impl Source for LiveKitStream {
 }
 
 pub trait RodioExt: Source + Sized {
-    fn process_buffer<F>(self, callback: F) -> ProcessBuffer<Self, F>
+    fn process_buffer<const N: usize, F>(self, callback: F) -> ProcessBuffer<N, Self, F>
     where
-        F: FnMut(&mut [rodio::Sample; 200]);
+        F: FnMut(&mut [rodio::Sample; N]);
 }
 
 impl<S: Source> RodioExt for S {
-    fn process_buffer<F>(self, callback: F) -> ProcessBuffer<Self, F>
+    fn process_buffer<const N: usize, F>(self, callback: F) -> ProcessBuffer<N, Self, F>
     where
-        F: FnMut(&mut [rodio::Sample; 200]),
+        F: FnMut(&mut [rodio::Sample; N]),
     {
         ProcessBuffer {
             inner: self,
             callback,
-            buffer: [0.0; 200],
-            next: 200,
+            buffer: [0.0; N],
+            next: N,
         }
     }
 }
 
-pub struct ProcessBuffer<S, F>
+pub struct ProcessBuffer<const N: usize, S, F>
 where
     S: Source + Sized,
-    F: FnMut(&mut [rodio::Sample; 200]),
+    F: FnMut(&mut [rodio::Sample; N]),
 {
     inner: S,
     callback: F,
-    buffer: [rodio::Sample; 200],
+    buffer: [rodio::Sample; N],
     next: usize,
 }
 
-impl<S, F> Iterator for ProcessBuffer<S, F>
+impl<const N: usize, S, F> Iterator for ProcessBuffer<S, F, N>
 where
     S: Source + Sized,
-    F: FnMut(&mut [rodio::Sample; 200]),
+    F: FnMut(&mut [rodio::Sample; N]),
 {
     type Item = rodio::Sample;
 
@@ -128,10 +128,10 @@ where
 }
 
 // TODO dvdsk this should be a spanless Source
-impl<S, F> Source for ProcessBuffer<S, F>
+impl<const N: usize, S, F> Source for ProcessBuffer<N, S, F>
 where
     S: Source + Sized,
-    F: FnMut(&mut [rodio::Sample; 200]),
+    F: FnMut(&mut [rodio::Sample; N]),
 {
     fn current_span_len(&self) -> Option<usize> {
         None
