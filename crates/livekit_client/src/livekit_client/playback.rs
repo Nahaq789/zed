@@ -59,7 +59,6 @@ pub(crate) fn play_remote_audio_track(
     let stop_handle = Arc::new(AtomicBool::new(false));
     let stop_handle_clone = stop_handle.clone();
     let stream = source::LiveKitStream::new(cx.background_executor(), track)
-        .process_buffer(|| apm)
         .stoppable()
         .periodic_access(Duration::from_millis(50), move |s| {
             if stop_handle.load(Ordering::Relaxed) {
@@ -178,16 +177,22 @@ impl AudioStack {
             }
         });
         let rodio_pipeline =
-            AudioSettings::try_read_global(cx, |setting| setting.rodio_audio).unwrap_or(false);
-        let capture_task = self.executor.spawn(async move {
-            if rodio_pipeline {
+            AudioSettings::try_read_global(cx, |setting| setting.rodio_audio).unwrap_or_default();
+        dbg!(rodio_pipeline);
+        let capture_task = if rodio_pipeline {
+            let apm = cx
+                .try_read_global::<audio::Audio, _>(|audio, _| Arc::clone(&audio.echo_canceller))
+                .unwrap(); // TODO fixme
+            self.executor.spawn(async move {
                 info!("Using experimental.rodio_audio audio pipeline");
                 Self::capture_input_rodio(apm, frame_tx).await
-            } else {
+            })
+        } else {
+            self.executor.spawn(async move {
                 Self::capture_input(apm, frame_tx, SAMPLE_RATE.get(), NUM_CHANNELS.get().into())
                     .await
-            }
-        });
+            })
+        };
 
         let on_drop = util::defer(|| {
             drop(transmit_task);
@@ -277,7 +282,7 @@ impl AudioStack {
         apm: Arc<Mutex<apm::AudioProcessingModule>>,
         frame_tx: UnboundedSender<AudioFrame<'static>>,
     ) -> Result<()> {
-        use crate::livekit_client::playback::source::RodioExt;
+        use audio::RodioExt;
         const NUM_CHANNELS: usize = 1;
         const LIVEKIT_BUFFER_SIZE: usize =
             (SAMPLE_RATE.get() as usize / 100) * NUM_CHANNELS as usize;
@@ -298,6 +303,7 @@ impl AudioStack {
                 ])
                 .prefer_buffer_sizes(512..)
                 .open_stream()?;
+            info!("Opened microphone: {:?}", stream.config());
             let mut stream = UniformSourceIterator::new(
                 stream,
                 NonZero::new(1).expect("1 is not zero"),
@@ -444,8 +450,6 @@ impl AudioStack {
         }
     }
 }
-
-use crate::livekit_client::playback::source::RodioExt;
 
 use super::LocalVideoTrack;
 

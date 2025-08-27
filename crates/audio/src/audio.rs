@@ -3,7 +3,10 @@ use collections::HashMap;
 use gpui::{App, BorrowAppContext, Global};
 use libwebrtc::native::apm;
 use parking_lot::Mutex;
-use rodio::{Decoder, OutputStream, OutputStreamBuilder, Source, mixer::Mixer, source::Buffered};
+use rodio::{
+    Decoder, OutputStream, OutputStreamBuilder, Source, cpal::Sample, mixer::Mixer,
+    source::Buffered,
+};
 use settings::Settings;
 use std::{io::Cursor, sync::Arc};
 use util::ResultExt;
@@ -11,6 +14,7 @@ use util::ResultExt;
 mod audio_settings;
 mod rodio_ext;
 pub use audio_settings::AudioSettings;
+pub use rodio_ext::RodioExt;
 
 pub fn init(cx: &mut App) {
     AudioSettings::register(cx);
@@ -44,7 +48,7 @@ impl Sound {
 pub struct Audio {
     output_handle: Option<OutputStream>,
     output_mixer: Option<Mixer>,
-    echo_canceller: Arc<Mutex<apm::AudioProcessingModule>>,
+    pub echo_canceller: Arc<Mutex<apm::AudioProcessingModule>>,
     source_cache: HashMap<Sound, Buffered<Decoder<Cursor<Vec<u8>>>>>,
 }
 
@@ -67,18 +71,24 @@ impl Audio {
     fn ensure_output_exists(&mut self) -> Option<&OutputStream> {
         if self.output_handle.is_none() {
             self.output_handle = OutputStreamBuilder::open_default_stream().log_err();
-            if let Some(output_handle) = self.output_handle {
-                let config = output_handle.config();
+            if let Some(output_handle) = &self.output_handle {
+                let config = output_handle.config().clone();
                 let (mixer, source) =
                     rodio::mixer::mixer(config.channel_count(), config.sample_rate());
                 self.output_mixer = Some(mixer);
 
                 let echo_canceller = Arc::clone(&self.echo_canceller);
-                let source = source.inspect_buffered(
-                    |buffer| echo_canceller.lock().process_reverse_stream(&mut buf),
-                    config.sample_rate().get() as i32,
-                    config.channel_count().get().into(),
-                );
+                let source = source.inspect_buffer::<200, _>(move |buffer| {
+                    let mut buf: [i16; _] = buffer.map(|s| s.to_sample());
+                    echo_canceller
+                        .lock()
+                        .process_reverse_stream(
+                            &mut buf,
+                            config.sample_rate().get() as i32,
+                            config.channel_count().get().into(),
+                        )
+                        .expect("Audio input and output threads should not panic");
+                });
                 output_handle.mixer().add(source);
             }
         }

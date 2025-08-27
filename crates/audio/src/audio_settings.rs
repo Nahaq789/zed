@@ -25,7 +25,8 @@ impl Settings for AudioSettings {
     type FileContent = AudioSettingsContent;
 
     fn load(sources: SettingsSources<Self::FileContent>, _cx: &mut App) -> Result<Self> {
-        sources.json_merge()
+        dbg!(&sources);
+        dbg!(sources.json_merge())
     }
 
     fn import_from_vscode(_vscode: &settings::VsCodeSettings, _current: &mut Self::FileContent) {}
