@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 
-use audio::AudioSettings;
+use audio::{AudioSettings, CHANNEL_COUNT, SAMPLE_RATE};
 use cpal::Sample;
 use cpal::traits::{DeviceTrait, StreamTrait as _};
 use dasp_sample::ToSample;
@@ -44,13 +44,6 @@ pub(crate) struct AudioStack {
     _output_task: RefCell<Weak<Task<()>>>,
     next_ssrc: AtomicI32,
 }
-
-// NOTE: We use WebRTC's mixer which only supports
-// 16kHz, 32kHz and 48kHz. As 48 is the most common "next step up"
-// for audio output devices like speakers/bluetooth, we just hard-code
-// this; and downsample when we need to.
-const SAMPLE_RATE: NonZero<u32> = NonZero::new(48000).expect("not zero");
-const NUM_CHANNELS: NonZero<u16> = NonZero::new(2).expect("not zero");
 
 pub(crate) fn play_remote_audio_track(
     track: &livekit::track::RemoteAudioTrack,
@@ -100,7 +93,7 @@ impl AudioStack {
         let source = AudioMixerSource {
             ssrc: next_ssrc,
             sample_rate: SAMPLE_RATE.get(),
-            num_channels: NUM_CHANNELS.get() as u32,
+            num_channels: CHANNEL_COUNT.get() as u32,
             buffer: Arc::default(),
         };
         self.mixer.lock().add_source(source.clone());
@@ -140,7 +133,7 @@ impl AudioStack {
             let apm = self.apm.clone();
             let mixer = self.mixer.clone();
             async move {
-                Self::play_output(apm, mixer, SAMPLE_RATE.get(), NUM_CHANNELS.get().into())
+                Self::play_output(apm, mixer, SAMPLE_RATE.get(), CHANNEL_COUNT.get().into())
                     .await
                     .log_err();
             }
@@ -157,7 +150,7 @@ impl AudioStack {
             // n.b. this struct's options are always ignored, noise cancellation is provided by apm.
             AudioSourceOptions::default(),
             SAMPLE_RATE.get(),
-            NUM_CHANNELS.get().into(),
+            CHANNEL_COUNT.get().into(),
             10,
         );
 
@@ -178,7 +171,6 @@ impl AudioStack {
         });
         let rodio_pipeline =
             AudioSettings::try_read_global(cx, |setting| setting.rodio_audio).unwrap_or_default();
-        dbg!(rodio_pipeline);
         let capture_task = if rodio_pipeline {
             let apm = cx
                 .try_read_global::<audio::Audio, _>(|audio, _| Arc::clone(&audio.echo_canceller))
@@ -189,7 +181,7 @@ impl AudioStack {
             })
         } else {
             self.executor.spawn(async move {
-                Self::capture_input(apm, frame_tx, SAMPLE_RATE.get(), NUM_CHANNELS.get().into())
+                Self::capture_input(apm, frame_tx, SAMPLE_RATE.get(), CHANNEL_COUNT.get().into())
                     .await
             })
         };
@@ -283,9 +275,8 @@ impl AudioStack {
         frame_tx: UnboundedSender<AudioFrame<'static>>,
     ) -> Result<()> {
         use audio::RodioExt;
-        const NUM_CHANNELS: usize = 1;
         const LIVEKIT_BUFFER_SIZE: usize =
-            (SAMPLE_RATE.get() as usize / 100) * NUM_CHANNELS as usize;
+            (audio::SAMPLE_RATE.get() as usize / 100) * audio::CHANNEL_COUNT.get() as usize;
 
         let (stream_error_tx, stream_error_rx) = channel();
 
@@ -304,31 +295,28 @@ impl AudioStack {
                 .prefer_buffer_sizes(512..)
                 .open_stream()?;
             info!("Opened microphone: {:?}", stream.config());
-            let mut stream = UniformSourceIterator::new(
-                stream,
-                NonZero::new(1).expect("1 is not zero"),
-                SAMPLE_RATE,
-            )
-            .limit(LimitSettings::live_performance())
-            .process_buffer::<LIVEKIT_BUFFER_SIZE, _>(|buffer| {
-                let mut int_buffer: [i16; _] = buffer.map(|s| s.to_sample());
-                if let Err(e) = apm
-                    .lock()
-                    .process_stream(
-                        &mut int_buffer,
-                        SAMPLE_RATE.get() as i32,
-                        NUM_CHANNELS as i32,
-                    )
-                    .context("livekit audio processor error")
-                {
-                    let _ = stream_error_tx.send(e);
-                } else {
-                    for (sample, processed) in buffer.iter_mut().zip(&int_buffer) {
-                        *sample = (*processed).to_sample_();
-                    }
-                }
-            })
-            .automatic_gain_control(1.0, 4.0, 0.0, 5.0);
+            let mut stream =
+                UniformSourceIterator::new(stream, audio::CHANNEL_COUNT, audio::SAMPLE_RATE)
+                    .limit(LimitSettings::live_performance())
+                    .process_buffer::<LIVEKIT_BUFFER_SIZE, _>(|buffer| {
+                        let mut int_buffer: [i16; _] = buffer.map(|s| s.to_sample());
+                        if let Err(e) = apm
+                            .lock()
+                            .process_stream(
+                                &mut int_buffer,
+                                audio::SAMPLE_RATE.get() as i32,
+                                audio::CHANNEL_COUNT.get() as i32,
+                            )
+                            .context("livekit audio processor error")
+                        {
+                            let _ = stream_error_tx.send(e);
+                        } else {
+                            for (sample, processed) in buffer.iter_mut().zip(&int_buffer) {
+                                *sample = (*processed).to_sample_();
+                            }
+                        }
+                    })
+                    .automatic_gain_control(1.0, 4.0, 0.0, 5.0);
 
             loop {
                 let sampled: Vec<_> = stream
@@ -348,8 +336,9 @@ impl AudioStack {
                 frame_tx
                     .unbounded_send(AudioFrame {
                         sample_rate: SAMPLE_RATE.get(),
-                        num_channels: NUM_CHANNELS as u32,
-                        samples_per_channel: sampled.len() as u32 / NUM_CHANNELS as u32,
+                        num_channels: audio::CHANNEL_COUNT.get() as u32,
+                        samples_per_channel: sampled.len() as u32
+                            / audio::CHANNEL_COUNT.get() as u32,
                         data: Cow::Owned(sampled),
                     })
                     .context("Failed to send audio frame")?
