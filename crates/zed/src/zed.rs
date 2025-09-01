@@ -13,7 +13,7 @@ use agent_ui::{AgentDiffToolbar, AgentPanelDelegate};
 use anyhow::Context as _;
 pub use app_menus::*;
 use assets::Assets;
-use audio::REPLAY_DURATION;
+use audio::{AudioSettings, REPLAY_DURATION};
 use breadcrumbs::Breadcrumbs;
 use client::zed_urls;
 use collections::VecDeque;
@@ -1944,7 +1944,7 @@ fn capture_audio(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Wor
     });
 }
 
-// TODO dvdsk Move this and capture audio somewhere else
+// TODO dvdsk Move this and capture audio somewhere else?
 fn capture_recent_audio(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     struct CaptureRecentAudioNotification {
         focus_handle: gpui::FocusHandle,
@@ -1988,20 +1988,30 @@ fn capture_recent_audio(workspace: &mut Workspace, _: &mut Window, cx: &mut Cont
 
     impl CaptureRecentAudioNotification {
         fn new(cx: &mut Context<Self>) -> Self {
-            let executor = cx.background_executor().clone();
-            let save_task = cx.default_global::<audio::Audio>().save_replays(executor);
-            let save_task = cx.spawn(async move |this, cx| {
-                let res = save_task.await;
-                this.update(cx, |this, cx| {
-                    this.save_result = Some(res);
-                    cx.notify();
-                })
-            });
+            let save_task = if AudioSettings::get_global(cx).rodio_audio {
+                let executor = cx.background_executor().clone();
+                let save_task = cx.default_global::<audio::Audio>().save_replays(executor);
+                let _save_task = cx.spawn(async move |this, cx| {
+                    let res = save_task.await;
+                    this.update(cx, |this, cx| {
+                        this.save_result = Some(res);
+                        cx.notify();
+                    })
+                });
 
-            Self {
-                focus_handle: cx.focus_handle(),
-                _save_task: save_task,
-                save_result: None,
+                Self {
+                    focus_handle: cx.focus_handle(),
+                    _save_task,
+                    save_result: None,
+                }
+            } else {
+                Self {
+                    focus_handle: cx.focus_handle(),
+                    _save_task: Task::ready(Ok(())),
+                    save_result: Some(Err(anyhow::anyhow!(
+                        "Capturing recent audio is only supported on the experimental rodio audio pipeline"
+                    ))),
+                }
             }
         }
     }

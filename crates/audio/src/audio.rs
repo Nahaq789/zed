@@ -183,6 +183,7 @@ impl Audio {
                     agc_source.set_enabled(true); // todo dvdsk how to get settings in here?
                 });
 
+            // todo dvdsk keep the above here, move the rest back to livekit?
             let (replay, mut stream) = stream.replayable(REPLAY_DURATION);
             replays.add_output_stream("local microphone".to_string(), replay);
 
