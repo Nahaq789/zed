@@ -1,31 +1,50 @@
 use anyhow::{Context as _, Result, anyhow};
 use collections::HashMap;
-use gpui::{App, BorrowAppContext, Global};
-use libwebrtc::native::apm;
+use futures::channel::mpsc::UnboundedSender;
+use gpui::{App, AsyncApp, BackgroundExecutor, BorrowAppContext, Global};
+use libwebrtc::{native::apm, prelude::AudioFrame};
+use log::info;
 use parking_lot::Mutex;
 use rodio::{
-    Decoder, OutputStream, OutputStreamBuilder, Source, cpal::Sample, mixer::Mixer,
-    source::Buffered,
+    Decoder, OutputStream, OutputStreamBuilder, Source,
+    cpal::Sample,
+    mixer::Mixer,
+    source::{Buffered, LimitSettings, UniformSourceIterator},
 };
 use settings::Settings;
-use std::{io::Cursor, num::NonZero, sync::Arc};
-use util::ResultExt;
+use std::{
+    borrow::Cow,
+    io::Cursor,
+    num::NonZero,
+    path::PathBuf,
+    sync::{
+        Arc,
+        mpsc::{TryRecvError, channel},
+    },
+    thread,
+    time::Duration,
+};
+use util::{ResultExt, debug_panic};
 
 mod audio_settings;
+mod replays;
 mod rodio_ext;
 pub use audio_settings::AudioSettings;
 pub use rodio_ext::RodioExt;
 
-// NOTE: We use WebRTC's mixer which only supports
+// NOTE: We used to use WebRTC's mixer which only supported
 // 16kHz, 32kHz and 48kHz. As 48 is the most common "next step up"
 // for audio output devices like speakers/bluetooth, we just hard-code
 // this; and downsample when we need to.
 //
 // Since most noise cancelling requires 16kHz we will move to
-// that in the future. Same for channel count. That should be input
-// channels and fixed to 1.
+// that in the future.
 pub const SAMPLE_RATE: NonZero<u32> = NonZero::new(48000).expect("not zero");
 pub const CHANNEL_COUNT: NonZero<u16> = NonZero::new(2).expect("not zero");
+const BUFFER_SIZE: usize = // echo canceller and livekit want 10ms of audio
+    (SAMPLE_RATE.get() as usize / 100) * CHANNEL_COUNT.get() as usize;
+
+pub const REPLAY_DURATION: Duration = Duration::from_secs(30);
 
 pub fn init(cx: &mut App) {
     AudioSettings::register(cx);
@@ -61,6 +80,7 @@ pub struct Audio {
     output_mixer: Option<Mixer>,
     pub echo_canceller: Arc<Mutex<apm::AudioProcessingModule>>,
     source_cache: HashMap<Sound, Buffered<Decoder<Cursor<Vec<u8>>>>>,
+    replays: replays::Replays,
 }
 
 impl Default for Audio {
@@ -72,6 +92,7 @@ impl Default for Audio {
                 true, false, false, false,
             ))),
             source_cache: Default::default(),
+            replays: Default::default(),
         }
     }
 }
@@ -87,8 +108,6 @@ impl Audio {
                 self.output_mixer = Some(mixer);
 
                 let echo_canceller = Arc::clone(&self.echo_canceller);
-                const BUFFER_SIZE: usize = // echo canceller wants 10ms of audio
-                    (SAMPLE_RATE.get() as usize / 100) * CHANNEL_COUNT.get() as usize;
                 let source = source.inspect_buffer::<BUFFER_SIZE, _>(move |buffer| {
                     let mut buf: [i16; _] = buffer.map(|s| s.to_sample());
                     echo_canceller
@@ -107,15 +126,108 @@ impl Audio {
         self.output_mixer.as_ref()
     }
 
-    pub fn play_source(
-        source: impl rodio::Source + Send + 'static,
+    pub fn save_replays(
+        &self,
+        executor: BackgroundExecutor,
+    ) -> gpui::Task<anyhow::Result<PathBuf>> {
+        self.replays.replays_to_tar(executor)
+    }
+
+    pub fn open_microphone(
+        cx: AsyncApp,
+        frame_tx: UnboundedSender<AudioFrame<'static>>,
+    ) -> anyhow::Result<()> {
+        let (apm, mut replays) = cx.try_read_default_global::<Audio, _>(|audio, _| {
+            (Arc::clone(&audio.echo_canceller), audio.replays.clone())
+        })?;
+
+        let (stream_error_tx, stream_error_rx) = channel();
+        thread::spawn(move || {
+            let stream = rodio::microphone::MicrophoneBuilder::new()
+                .default_device()?
+                .default_config()?
+                .prefer_sample_rates([
+                    SAMPLE_RATE,
+                    SAMPLE_RATE.saturating_mul(NonZero::new(2).expect("not zero")),
+                ])
+                .prefer_channel_counts([
+                    NonZero::new(1).expect("not zero"),
+                    NonZero::new(2).expect("not zero"),
+                ])
+                .prefer_buffer_sizes(512..)
+                .open_stream()?;
+            info!("Opened microphone: {:?}", stream.config());
+
+            let stream = UniformSourceIterator::new(stream, CHANNEL_COUNT, SAMPLE_RATE)
+                .limit(LimitSettings::live_performance())
+                .process_buffer::<BUFFER_SIZE, _>(|buffer| {
+                    let mut int_buffer: [i16; _] = buffer.map(|s| s.to_sample());
+                    if let Err(e) = apm
+                        .lock()
+                        .process_stream(
+                            &mut int_buffer,
+                            SAMPLE_RATE.get() as i32,
+                            CHANNEL_COUNT.get() as i32,
+                        )
+                        .context("livekit audio processor error")
+                    {
+                        let _ = stream_error_tx.send(e);
+                    } else {
+                        for (sample, processed) in buffer.iter_mut().zip(&int_buffer) {
+                            *sample = (*processed).to_sample();
+                        }
+                    }
+                })
+                .automatic_gain_control(1.0, 4.0, 0.0, 5.0)
+                .periodic_access(Duration::from_millis(100), move |agc_source| {
+                    agc_source.set_enabled(true); // todo dvdsk how to get settings in here?
+                });
+
+            let (replay, mut stream) = stream.replayable(REPLAY_DURATION);
+            replays.add_output_stream("local microphone".to_string(), replay);
+
+            loop {
+                let sampled: Vec<_> = stream
+                    .by_ref()
+                    .take(BUFFER_SIZE)
+                    .map(|s| s.to_sample())
+                    .collect();
+
+                match stream_error_rx.try_recv() {
+                    Ok(apm_error) => return Err::<(), _>(apm_error),
+                    Err(TryRecvError::Disconnected) => {
+                        debug_panic!("Stream should end on its own without sending an error")
+                    }
+                    Err(TryRecvError::Empty) => (),
+                }
+
+                frame_tx
+                    .unbounded_send(AudioFrame {
+                        sample_rate: SAMPLE_RATE.get(),
+                        num_channels: CHANNEL_COUNT.get() as u32,
+                        samples_per_channel: sampled.len() as u32 / CHANNEL_COUNT.get() as u32,
+                        data: Cow::Owned(sampled),
+                    })
+                    .context("Failed to send audio frame")?
+            }
+        });
+
+        Ok(())
+    }
+
+    pub fn play_stream(
+        stream_source: impl rodio::Source + Send + 'static,
+        stream_name: String,
         cx: &mut App,
     ) -> anyhow::Result<()> {
+        let (replay_source, source) = stream_source.replayable(REPLAY_DURATION);
+
         cx.update_default_global(|this: &mut Self, _cx| {
             let output_mixer = this
                 .ensure_output_exists()
                 .ok_or_else(|| anyhow!("Could not open audio output"))?;
             output_mixer.add(source);
+            this.replays.add_output_stream(stream_name, replay_source);
             Ok(())
         })
     }

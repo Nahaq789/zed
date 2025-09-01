@@ -14,13 +14,18 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
+async-tar.workspace = true
 collections.workspace = true
+crossbeam.workspace = true
 gpui.workspace = true
-settings.workspace = true
-schemars.workspace = true
-serde.workspace = true
+log.workspace = true
+futures.workspace = true
 parking_lot.workspace = true
 rodio = { workspace = true, features = [ "wav", "playback", "tracing" ] }
+schemars.workspace = true
+serde.workspace = true
+settings.workspace = true
+smol.workspace = true
 util.workspace = true
 workspace-hack.workspace = true
 

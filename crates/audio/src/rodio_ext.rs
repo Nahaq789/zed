@@ -1,18 +1,22 @@
-use rodio::Source;
+use std::{sync::Arc, time::Duration};
+
+use crossbeam::queue::ArrayQueue;
+use rodio::{ChannelCount, Sample, SampleRate, Source};
 
 pub trait RodioExt: Source + Sized {
     fn process_buffer<const N: usize, F>(self, callback: F) -> ProcessBuffer<N, Self, F>
     where
-        F: FnMut(&mut [rodio::Sample; N]);
+        F: FnMut(&mut [Sample; N]);
     fn inspect_buffer<const N: usize, F>(self, callback: F) -> InspectBuffer<N, Self, F>
     where
-        F: FnMut(&[rodio::Sample; N]);
+        F: FnMut(&[Sample; N]);
+    fn replayable(self, duration: Duration) -> (Replay, Replayable<Self>);
 }
 
 impl<S: Source> RodioExt for S {
     fn process_buffer<const N: usize, F>(self, callback: F) -> ProcessBuffer<N, Self, F>
     where
-        F: FnMut(&mut [rodio::Sample; N]),
+        F: FnMut(&mut [Sample; N]),
     {
         ProcessBuffer {
             inner: self,
@@ -23,7 +27,7 @@ impl<S: Source> RodioExt for S {
     }
     fn inspect_buffer<const N: usize, F>(self, callback: F) -> InspectBuffer<N, Self, F>
     where
-        F: FnMut(&[rodio::Sample; N]),
+        F: FnMut(&[Sample; N]),
     {
         InspectBuffer {
             inner: self,
@@ -32,17 +36,44 @@ impl<S: Source> RodioExt for S {
             free: 0,
         }
     }
+    fn replayable(self, duration: Duration) -> (Replay, Replayable<Self>) {
+        let samples_per_second = self.sample_rate().get() * self.channels().get() as u32;
+        let samples_to_queue = duration.as_secs_f64() * samples_per_second as f64;
+        let samples_to_queue =
+            (samples_to_queue as usize).next_multiple_of(self.channels().get().into());
+
+        let chunk_size =
+            samples_to_queue.min(1000usize.next_multiple_of(self.channels().get().into()));
+        let chunks_to_queue = samples_to_queue.div_ceil(chunk_size);
+
+        let queue = Arc::new(ArrayQueue::new(chunks_to_queue));
+        (
+            Replay {
+                rx: Arc::clone(&queue),
+                buffer: Vec::new().into_iter(),
+                sleep_duration: duration / 2,
+                sample_rate: self.sample_rate(),
+                channel_count: self.channels(),
+            },
+            Replayable {
+                inner: self,
+                buffer: Vec::with_capacity(chunk_size),
+                chunk_size,
+                tx: queue,
+            },
+        )
+    }
 }
 
 pub struct ProcessBuffer<const N: usize, S, F>
 where
     S: Source + Sized,
-    F: FnMut(&mut [rodio::Sample; N]),
+    F: FnMut(&mut [Sample; N]),
 {
     inner: S,
     callback: F,
     /// Buffer used for both input and output.
-    buffer: [rodio::Sample; N],
+    buffer: [Sample; N],
     /// Next already processed sample is at this index
     /// in buffer.
     ///
@@ -54,9 +85,9 @@ where
 impl<const N: usize, S, F> Iterator for ProcessBuffer<N, S, F>
 where
     S: Source + Sized,
-    F: FnMut(&mut [rodio::Sample; N]),
+    F: FnMut(&mut [Sample; N]),
 {
-    type Item = rodio::Sample;
+    type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next += 1;
@@ -78,7 +109,7 @@ where
 impl<const N: usize, S, F> Source for ProcessBuffer<N, S, F>
 where
     S: Source + Sized,
-    F: FnMut(&mut [rodio::Sample; N]),
+    F: FnMut(&mut [Sample; N]),
 {
     fn current_span_len(&self) -> Option<usize> {
         // TODO dvdsk this should be a spanless Source
@@ -101,12 +132,12 @@ where
 pub struct InspectBuffer<const N: usize, S, F>
 where
     S: Source + Sized,
-    F: FnMut(&[rodio::Sample; N]),
+    F: FnMut(&[Sample; N]),
 {
     inner: S,
     callback: F,
     /// Stores already emitted samples, once its full we call the callback.
-    buffer: [rodio::Sample; N],
+    buffer: [Sample; N],
     /// Next free element in buffer. If this is equal to the buffer length
     /// we have no more free lements.
     free: usize,
@@ -115,9 +146,9 @@ where
 impl<const N: usize, S, F> Iterator for InspectBuffer<N, S, F>
 where
     S: Source + Sized,
-    F: FnMut(&[rodio::Sample; N]),
+    F: FnMut(&[Sample; N]),
 {
-    type Item = rodio::Sample;
+    type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
         let Some(sample) = self.inner.next() else {
@@ -139,7 +170,7 @@ where
 impl<const N: usize, S, F> Source for InspectBuffer<N, S, F>
 where
     S: Source + Sized,
-    F: FnMut(&[rodio::Sample; N]),
+    F: FnMut(&[Sample; N]),
 {
     fn current_span_len(&self) -> Option<usize> {
         // TODO dvdsk this should be a spanless Source
@@ -159,21 +190,124 @@ where
     }
 }
 
+#[derive(Debug)]
+pub struct Replayable<S: Source> {
+    inner: S,
+    buffer: Vec<Sample>,
+    chunk_size: usize,
+    tx: Arc<ArrayQueue<Vec<Sample>>>,
+}
+
+impl<S: Source> Iterator for Replayable<S> {
+    type Item = Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(sample) = self.inner.next() {
+            self.buffer.push(sample);
+            if self.buffer.len() == self.chunk_size {
+                let _oldest_element = self.tx.force_push(std::mem::take(&mut self.buffer));
+            }
+            Some(sample)
+        } else {
+            let _oldest_element = self.tx.force_push(std::mem::take(&mut self.buffer));
+            None
+        }
+    }
+}
+
+impl<S: Source> Source for Replayable<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        // Todo dvdsk should be spanless too
+        self.inner.current_span_len()
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.inner.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+}
+
+#[derive(Debug)]
+pub struct Replay {
+    rx: Arc<ArrayQueue<Vec<Sample>>>,
+    buffer: std::vec::IntoIter<Sample>,
+    sleep_duration: Duration,
+    sample_rate: SampleRate,
+    channel_count: ChannelCount,
+}
+
+impl Replay {
+    pub fn source_is_active(&self) -> bool {
+        Arc::strong_count(&self.rx) == 2
+    }
+}
+
+impl Iterator for Replay {
+    type Item = Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(sample) = self.buffer.next() {
+            return Some(sample);
+        }
+
+        loop {
+            if let Some(new_buffer) = self.rx.pop() {
+                self.buffer = new_buffer.into_iter();
+                return self.buffer.next();
+            }
+
+            if !self.source_is_active() {
+                return None;
+            }
+
+            std::thread::sleep(self.sleep_duration);
+        }
+    }
+}
+
+impl Source for Replay {
+    fn current_span_len(&self) -> Option<usize> {
+        None // source is not compatible with spans
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.channel_count
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rodio::static_buffer::StaticSamplesBuffer;
 
     use super::*;
 
-    #[cfg(test)]
+    const SAMPLES: [Sample; 5] = [0.0, 1.0, 2.0, 3.0, 4.0];
+
+    fn test_source() -> StaticSamplesBuffer {
+        StaticSamplesBuffer::new(1.try_into().unwrap(), 1.try_into().unwrap(), &SAMPLES)
+    }
+
     mod process_buffer {
         use super::*;
 
         #[test]
         fn callback_gets_all_samples() {
-            const SAMPLES: [f32; 5] = [0.0, 1.0, 2.0, 3.0, 4.0];
-            let input =
-                StaticSamplesBuffer::new(1.try_into().unwrap(), 1.try_into().unwrap(), &SAMPLES);
+            let input = test_source();
 
             let _ = input
                 .process_buffer::<{ SAMPLES.len() }, _>(|buffer| assert_eq!(*buffer, SAMPLES))
@@ -181,9 +315,7 @@ mod tests {
         }
         #[test]
         fn callback_modifies_yielded() {
-            const SAMPLES: [f32; 5] = [0.0, 1.0, 2.0, 3.0, 4.0];
-            let input =
-                StaticSamplesBuffer::new(1.try_into().unwrap(), 1.try_into().unwrap(), &SAMPLES);
+            let input = test_source();
 
             let yielded: Vec<_> = input
                 .process_buffer::<{ SAMPLES.len() }, _>(|buffer| {
@@ -199,9 +331,7 @@ mod tests {
         }
         #[test]
         fn source_truncates_to_whole_buffers() {
-            const SAMPLES: [f32; 5] = [0.0, 1.0, 2.0, 3.0, 4.0];
-            let input =
-                StaticSamplesBuffer::new(1.try_into().unwrap(), 1.try_into().unwrap(), &SAMPLES);
+            let input = test_source();
 
             let yielded = input
                 .process_buffer::<3, _>(|buffer| assert_eq!(buffer, &SAMPLES[..3]))
@@ -210,15 +340,12 @@ mod tests {
         }
     }
 
-    #[cfg(test)]
     mod inspect_buffer {
         use super::*;
 
         #[test]
         fn callback_gets_all_samples() {
-            const SAMPLES: [f32; 5] = [0.0, 1.0, 2.0, 3.0, 4.0];
-            let input =
-                StaticSamplesBuffer::new(1.try_into().unwrap(), 1.try_into().unwrap(), &SAMPLES);
+            let input = test_source();
 
             let _ = input
                 .inspect_buffer::<{ SAMPLES.len() }, _>(|buffer| assert_eq!(*buffer, SAMPLES))
@@ -226,14 +353,42 @@ mod tests {
         }
         #[test]
         fn source_does_not_truncate() {
-            const SAMPLES: [f32; 5] = [0.0, 1.0, 2.0, 3.0, 4.0];
-            let input =
-                StaticSamplesBuffer::new(1.try_into().unwrap(), 1.try_into().unwrap(), &SAMPLES);
+            let input = test_source();
 
             let yielded = input
                 .inspect_buffer::<3, _>(|buffer| assert_eq!(buffer, &SAMPLES[..3]))
                 .count();
             assert_eq!(yielded, SAMPLES.len())
+        }
+    }
+
+    mod instant_replay {
+        use super::*;
+
+        #[test]
+        fn continues_after_history() {
+            let input = test_source();
+
+            let (mut replay, mut source) = input.replayable(Duration::from_secs(3));
+
+            source.by_ref().take(3).count();
+            let yielded: Vec<Sample> = replay.by_ref().take(3).collect();
+            assert_eq!(&yielded, &SAMPLES[0..3],);
+
+            source.count();
+            let yielded: Vec<Sample> = replay.collect();
+            assert_eq!(&yielded, &SAMPLES[3..5],);
+        }
+
+        #[test]
+        fn keeps_only_latest() {
+            let input = test_source();
+
+            let (mut replay, mut source) = input.replayable(Duration::from_secs(2));
+
+            source.by_ref().take(5).count();
+            let yielded: Vec<Sample> = replay.by_ref().take(2).collect();
+            assert_eq!(&yielded, &SAMPLES[3..5],);
         }
     }
 }
