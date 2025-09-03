@@ -129,7 +129,7 @@ impl Audio {
     pub fn save_replays(
         &self,
         executor: BackgroundExecutor,
-    ) -> gpui::Task<anyhow::Result<PathBuf>> {
+    ) -> gpui::Task<anyhow::Result<(PathBuf, Duration)>> {
         self.replays.replays_to_tar(executor)
     }
 

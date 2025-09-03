@@ -247,6 +247,15 @@ impl Replay {
     pub fn source_is_active(&self) -> bool {
         Arc::strong_count(&self.rx) == 2
     }
+
+    /// Returns duration of what is in the buffer and
+    /// can be returned without blocking.
+    pub fn duration_ready(&self) -> Duration {
+        let samples_per_second = self.channels().get() as u32 * self.sample_rate().get();
+        let samples_queued = self.rx.len() + self.buffer.len();
+        let seconds_queued = samples_queued as f64 / samples_per_second as f64;
+        Duration::from_secs_f64(seconds_queued)
+    }
 }
 
 impl Iterator for Replay {

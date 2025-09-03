@@ -1948,7 +1948,7 @@ fn capture_audio(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Wor
 fn capture_recent_audio(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     struct CaptureRecentAudioNotification {
         focus_handle: gpui::FocusHandle,
-        save_result: Option<Result<PathBuf, anyhow::Error>>,
+        save_result: Option<Result<(PathBuf, Duration), anyhow::Error>>,
         _save_task: Task<anyhow::Result<()>>,
     }
 
@@ -1965,12 +1965,12 @@ fn capture_recent_audio(workspace: &mut Workspace, _: &mut Window, cx: &mut Cont
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let message = match &self.save_result {
                 None => format!(
-                    "Saving last {} seconds of all audio",
+                    "Saving up to {} seconds of recent audio",
                     REPLAY_DURATION.as_secs(),
                 ),
-                Some(Ok(path)) => format!(
+                Some(Ok((path, duration))) => format!(
                     "Saved {} seconds of all audio to {}",
-                    REPLAY_DURATION.as_secs(),
+                    duration.as_secs(),
                     path.display(),
                 ),
                 Some(Err(e)) => format!("Error saving audio replays: {e:?}"),
@@ -1988,7 +1988,7 @@ fn capture_recent_audio(workspace: &mut Workspace, _: &mut Window, cx: &mut Cont
 
     impl CaptureRecentAudioNotification {
         fn new(cx: &mut Context<Self>) -> Self {
-            let save_task = if AudioSettings::get_global(cx).rodio_audio {
+            if AudioSettings::get_global(cx).rodio_audio {
                 let executor = cx.background_executor().clone();
                 let save_task = cx.default_global::<audio::Audio>().save_replays(executor);
                 let _save_task = cx.spawn(async move |this, cx| {

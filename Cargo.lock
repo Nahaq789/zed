@@ -13873,7 +13873,7 @@ dependencies = [
 [[package]]
 name = "rodio"
 version = "0.21.1"
-source = "git+https://github.com/RustAudio/rodio?branch=better_wav_output#43503b4a8c5773fe2ee1c1fd43b6d2aa85f9ace2"
+source = "git+https://github.com/RustAudio/rodio?branch=better_wav_output#82514bd1f2c6cfd9a1a885019b26a8ffea75bc5c"
 dependencies = [
  "cpal",
  "dasp_sample",
