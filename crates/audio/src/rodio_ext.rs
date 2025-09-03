@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use crossbeam::queue::ArrayQueue;
 use rodio::{ChannelCount, Sample, SampleRate, Source};
@@ -46,7 +52,7 @@ impl<S: Source> RodioExt for S {
             samples_to_queue.min(1000usize.next_multiple_of(self.channels().get().into()));
         let chunks_to_queue = samples_to_queue.div_ceil(chunk_size);
 
-        let queue = Arc::new(ArrayQueue::new(chunks_to_queue));
+        let queue = Arc::new(ReplayQueue::new(chunks_to_queue, chunk_size));
         (
             Replay {
                 rx: Arc::clone(&queue),
@@ -56,12 +62,50 @@ impl<S: Source> RodioExt for S {
                 channel_count: self.channels(),
             },
             Replayable {
+                tx: queue,
                 inner: self,
                 buffer: Vec::with_capacity(chunk_size),
                 chunk_size,
-                tx: queue,
             },
         )
+    }
+}
+
+#[derive(Debug)]
+struct ReplayQueue {
+    inner: ArrayQueue<Vec<Sample>>,
+    normal_chunk_len: usize,
+    /// The last chunk in the queue may be smaller then
+    /// the normal chunk size. This is always equal to the
+    /// size of the last element in the queue.
+    /// (so normally chunk_size)
+    last_chunk_len: AtomicUsize,
+}
+
+impl ReplayQueue {
+    fn new(queue_len: usize, chunk_size: usize) -> Self {
+        Self {
+            inner: ArrayQueue::new(queue_len),
+            normal_chunk_len: chunk_size,
+            last_chunk_len: AtomicUsize::new(chunk_size),
+        }
+    }
+    fn len(&self) -> usize {
+        self.inner.len().saturating_sub(1) * self.normal_chunk_len
+            + self.last_chunk_len.load(Ordering::Acquire)
+    }
+
+    fn pop(&self) -> Option<Vec<Sample>> {
+        self.inner.pop()
+    }
+
+    fn push_last(&self, samples: Vec<Sample>) {
+        self.last_chunk_len.store(samples.len(), Ordering::Release);
+        let _pushed_out_of_ringbuf = self.inner.force_push(samples);
+    }
+
+    fn push_normal(&self, samples: Vec<Sample>) {
+        let _pushed_out_of_ringbuf = self.inner.force_push(samples);
     }
 }
 
@@ -195,7 +239,7 @@ pub struct Replayable<S: Source> {
     inner: S,
     buffer: Vec<Sample>,
     chunk_size: usize,
-    tx: Arc<ArrayQueue<Vec<Sample>>>,
+    tx: Arc<ReplayQueue>,
 }
 
 impl<S: Source> Iterator for Replayable<S> {
@@ -205,11 +249,12 @@ impl<S: Source> Iterator for Replayable<S> {
         if let Some(sample) = self.inner.next() {
             self.buffer.push(sample);
             if self.buffer.len() == self.chunk_size {
-                let _oldest_element = self.tx.force_push(std::mem::take(&mut self.buffer));
+                self.tx.push_normal(std::mem::take(&mut self.buffer));
             }
             Some(sample)
         } else {
-            let _oldest_element = self.tx.force_push(std::mem::take(&mut self.buffer));
+            let last_chunk = std::mem::take(&mut self.buffer);
+            self.tx.push_last(last_chunk);
             None
         }
     }
@@ -236,7 +281,7 @@ impl<S: Source> Source for Replayable<S> {
 
 #[derive(Debug)]
 pub struct Replay {
-    rx: Arc<ArrayQueue<Vec<Sample>>>,
+    rx: Arc<ReplayQueue>,
     buffer: std::vec::IntoIter<Sample>,
     sleep_duration: Duration,
     sample_rate: SampleRate,
@@ -253,6 +298,7 @@ impl Replay {
     pub fn duration_ready(&self) -> Duration {
         let samples_per_second = self.channels().get() as u32 * self.sample_rate().get();
         let samples_queued = self.rx.len() + self.buffer.len();
+
         let seconds_queued = samples_queued as f64 / samples_per_second as f64;
         Duration::from_secs_f64(seconds_queued)
     }
@@ -301,14 +347,14 @@ impl Source for Replay {
 
 #[cfg(test)]
 mod tests {
-    use rodio::static_buffer::StaticSamplesBuffer;
+    use rodio::{nz, static_buffer::StaticSamplesBuffer};
 
     use super::*;
 
     const SAMPLES: [Sample; 5] = [0.0, 1.0, 2.0, 3.0, 4.0];
 
     fn test_source() -> StaticSamplesBuffer {
-        StaticSamplesBuffer::new(1.try_into().unwrap(), 1.try_into().unwrap(), &SAMPLES)
+        StaticSamplesBuffer::new(nz!(1), nz!(1), &SAMPLES)
     }
 
     mod process_buffer {
@@ -395,9 +441,29 @@ mod tests {
 
             let (mut replay, mut source) = input.replayable(Duration::from_secs(2));
 
-            source.by_ref().take(5).count();
+            source.by_ref().take(5).count(); // get all items but do not end the source
             let yielded: Vec<Sample> = replay.by_ref().take(2).collect();
-            assert_eq!(&yielded, &SAMPLES[3..5],);
+            // Note we do not get the last element, it has not been send yet
+            // due to buffering.
+            assert_eq!(&yielded, &SAMPLES[2..4]);
+
+            source.count(); // exhaust source
+            let yielded: Vec<Sample> = replay.collect();
+            assert_eq!(&yielded, &[SAMPLES[4]]);
+        }
+
+        #[test]
+        fn keeps_correct_amount_of_seconds() {
+            let input = StaticSamplesBuffer::new(nz!(16_000), nz!(1), &[0.0; 40_000]);
+
+            let (replay, mut source) = input.replayable(Duration::from_secs(2));
+
+            source.by_ref().count();
+            let n_yielded = replay.count();
+            assert_eq!(
+                n_yielded as u32,
+                source.sample_rate().get() * source.channels().get() as u32 * 2
+            );
         }
     }
 }

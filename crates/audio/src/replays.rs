@@ -37,7 +37,6 @@ impl Replays {
             let longest = recordings
                 .iter()
                 .map(|(_, r)| {
-                    HEREBEBUGGIESdbg!(r);
                     r.total_duration()
                         .expect("SamplesBuffer always returns a total duration")
                 })
