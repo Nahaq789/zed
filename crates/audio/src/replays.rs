@@ -50,20 +50,27 @@ impl Replays {
                 .await
                 .context("Could not create file for tar")?;
 
-            let mut header = Header::new_gnu();
-            header.set_size(4);
-            header.set_cksum();
             let mut tar = Builder::new(tar);
 
             for (name, recording) in recordings {
                 let mut writer = io::Cursor::new(Vec::new());
                 rodio::wav_to_writer(recording, &mut writer).context("failed to encode wav")?;
-                writer.set_position(0);
-                tar.append_data(&mut header, name, writer.into_inner().as_slice())
+                let wav_data = writer.into_inner();
+                let path = name.replace(' ', "_") + ".wav";
+                let mut header = Header::new_gnu();
+                // rw permissions for everyone
+                header.set_mode(0o666);
+                header.set_size(wav_data.len() as u64);
+                tar.append_data(&mut header, path, wav_data.as_slice())
                     .await
                     .context("failed to apped wav to tar")?;
             }
-            tar.finish().await.context("Could not finish writing tar")?;
+            tar.into_inner()
+                .await
+                .context("Could not finish writing tar")?
+                .sync_all()
+                .await
+                .context("Could not flush tar file to disk")?;
             Ok((path, longest))
         })
     }
