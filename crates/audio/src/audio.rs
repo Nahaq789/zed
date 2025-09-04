@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result};
 use collections::HashMap;
 use futures::channel::mpsc::UnboundedSender;
 use gpui::{App, AsyncApp, BackgroundExecutor, BorrowAppContext, Global};
@@ -50,7 +50,7 @@ pub fn init(cx: &mut App) {
     AudioSettings::register(cx);
 }
 
-#[derive(Copy, Clone, Eq, Hash, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, Hash, PartialEq)]
 pub enum Sound {
     Joined,
     Leave,
@@ -100,11 +100,16 @@ impl Default for Audio {
 impl Global for Audio {}
 
 impl Audio {
-    fn ensure_output_exists(&mut self) -> Option<&Mixer> {
+    fn ensure_output_exists(&mut self) -> Result<&Mixer> {
         if self.output_handle.is_none() {
-            self.output_handle = OutputStreamBuilder::open_default_stream().log_err();
+            self.output_handle = Some(
+                OutputStreamBuilder::open_default_stream()
+                    .context("Could not open default output stream")?,
+            );
             if let Some(output_handle) = &self.output_handle {
                 let (mixer, source) = rodio::mixer::mixer(CHANNEL_COUNT, SAMPLE_RATE);
+                // or the mixer will end immediately as its empty.
+                mixer.add(rodio::source::Zero::new(CHANNEL_COUNT, SAMPLE_RATE));
                 self.output_mixer = Some(mixer);
 
                 let echo_canceller = Arc::clone(&self.echo_canceller);
@@ -123,7 +128,10 @@ impl Audio {
             }
         }
 
-        self.output_mixer.as_ref()
+        Ok(self
+            .output_mixer
+            .as_ref()
+            .expect("we only get here if opening the outputstream succeeded"))
     }
 
     pub fn save_replays(
@@ -223,10 +231,15 @@ impl Audio {
     ) -> anyhow::Result<()> {
         let (replay_source, source) = stream_source.replayable(REPLAY_DURATION);
 
+        dbg!(&stream_name);
         cx.update_default_global(|this: &mut Self, _cx| {
             let output_mixer = this
                 .ensure_output_exists()
-                .ok_or_else(|| anyhow!("Could not open audio output"))?;
+                .context("Could not get output mixer")?;
+            let source = source.inspect_buffer::<1000, _>(|buf| {
+                dbg!(buf.into_iter().copied().map(|s| s.abs()).sum::<f32>());
+            });
+            dbg!("added inspect");
             output_mixer.add(source);
             this.replays.add_output_stream(stream_name, replay_source);
             Ok(())
@@ -234,9 +247,13 @@ impl Audio {
     }
 
     pub fn play_sound(sound: Sound, cx: &mut App) {
+        dbg!(&sound);
         cx.update_default_global(|this: &mut Self, cx| {
             let source = this.sound_source(sound, cx).log_err()?;
-            let output_mixer = this.ensure_output_exists()?;
+            let output_mixer = this
+                .ensure_output_exists()
+                .context("Could not get output mixer")
+                .log_err()?;
 
             output_mixer.add(source);
             Some(())

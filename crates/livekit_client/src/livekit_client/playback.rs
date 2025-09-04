@@ -53,6 +53,7 @@ pub(crate) fn play_remote_audio_track(
                 s.stop();
             }
         });
+    dbg!("adding livekit stream");
     audio::Audio::play_stream(stream, track.name(), cx).context("Could not play audio")?;
 
     let on_drop = util::defer(move || {
