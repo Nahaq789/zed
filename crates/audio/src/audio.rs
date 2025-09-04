@@ -9,6 +9,7 @@ use rodio::{
     Decoder, OutputStream, OutputStreamBuilder, Source,
     cpal::Sample,
     mixer::Mixer,
+    nz,
     source::{Buffered, LimitSettings, UniformSourceIterator},
 };
 use settings::Settings;
@@ -39,8 +40,8 @@ pub use rodio_ext::RodioExt;
 //
 // Since most noise cancelling requires 16kHz we will move to
 // that in the future.
-pub const SAMPLE_RATE: NonZero<u32> = NonZero::new(48000).expect("not zero");
-pub const CHANNEL_COUNT: NonZero<u16> = NonZero::new(2).expect("not zero");
+pub const SAMPLE_RATE: NonZero<u32> = nz!(48000);
+pub const CHANNEL_COUNT: NonZero<u16> = nz!(2);
 const BUFFER_SIZE: usize = // echo canceller and livekit want 10ms of audio
     (SAMPLE_RATE.get() as usize / 100) * CHANNEL_COUNT.get() as usize;
 
@@ -154,14 +155,8 @@ impl Audio {
             let stream = rodio::microphone::MicrophoneBuilder::new()
                 .default_device()?
                 .default_config()?
-                .prefer_sample_rates([
-                    SAMPLE_RATE,
-                    SAMPLE_RATE.saturating_mul(NonZero::new(2).expect("not zero")),
-                ])
-                .prefer_channel_counts([
-                    NonZero::new(1).expect("not zero"),
-                    NonZero::new(2).expect("not zero"),
-                ])
+                .prefer_sample_rates([SAMPLE_RATE, SAMPLE_RATE.saturating_mul(nz!(2))])
+                .prefer_channel_counts([nz!(1), nz!(2)])
                 .prefer_buffer_sizes(512..)
                 .open_stream()?;
             info!("Opened microphone: {:?}", stream.config());
@@ -231,15 +226,11 @@ impl Audio {
     ) -> anyhow::Result<()> {
         let (replay_source, source) = stream_source.replayable(REPLAY_DURATION);
 
-        dbg!(&stream_name);
         cx.update_default_global(|this: &mut Self, _cx| {
             let output_mixer = this
                 .ensure_output_exists()
                 .context("Could not get output mixer")?;
-            let source = source.inspect_buffer::<1000, _>(|buf| {
-                dbg!(buf.into_iter().copied().map(|s| s.abs()).sum::<f32>());
-            });
-            dbg!("added inspect");
+            dbg!(source.sample_rate());
             output_mixer.add(source);
             this.replays.add_output_stream(stream_name, replay_source);
             Ok(())
@@ -247,7 +238,6 @@ impl Audio {
     }
 
     pub fn play_sound(sound: Sound, cx: &mut App) {
-        dbg!(&sound);
         cx.update_default_global(|this: &mut Self, cx| {
             let source = this.sound_source(sound, cx).log_err()?;
             let output_mixer = this

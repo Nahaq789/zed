@@ -53,8 +53,8 @@ pub(crate) fn play_remote_audio_track(
                 s.stop();
             }
         });
-    dbg!("adding livekit stream");
-    audio::Audio::play_stream(stream, track.name(), cx).context("Could not play audio")?;
+    audio::Audio::play_stream(stream, track.name() + &track.sid().to_string(), cx)
+        .context("Could not play audio")?;
 
     let on_drop = util::defer(move || {
         stop_handle_clone.store(true, Ordering::Relaxed);
@@ -140,6 +140,7 @@ impl AudioStack {
 
     pub(crate) fn capture_local_microphone_track(
         &self,
+        user_name: &str,
         cx: &AsyncApp,
     ) -> Result<(crate::LocalAudioTrack, AudioStream)> {
         let source = NativeAudioSource::new(
@@ -151,7 +152,7 @@ impl AudioStack {
         );
 
         let track = track::LocalAudioTrack::create_audio_track(
-            "microphone",
+            user_name,
             RtcAudioSource::Native(source.clone()),
         );
 
