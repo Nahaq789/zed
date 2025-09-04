@@ -58,8 +58,8 @@ impl<S: Source> RodioExt for S {
                 rx: Arc::clone(&queue),
                 buffer: Vec::new().into_iter(),
                 sleep_duration: duration / 2,
-                sample_rate: self.sample_rate(),
-                channel_count: self.channels(),
+                sample_rate: dbg!(self.sample_rate()),
+                channel_count: dbg!(self.channels()),
             },
             Replayable {
                 tx: queue,

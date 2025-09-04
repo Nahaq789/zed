@@ -14,7 +14,7 @@ use crate::{REPLAY_DURATION, rodio_ext::Replay};
 pub(crate) struct Replays(Arc<Mutex<HashMap<String, Replay>>>);
 
 impl Replays {
-    pub(crate) fn add_output_stream(&mut self, stream_name: String, source: Replay) {
+    pub(crate) fn add_voip_stream(&mut self, stream_name: String, source: Replay) {
         let mut map = self.0.lock();
         map.retain(|_, replay| replay.source_is_active());
         map.insert(stream_name, source);

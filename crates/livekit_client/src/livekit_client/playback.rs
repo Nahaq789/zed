@@ -46,15 +46,18 @@ pub(crate) fn play_remote_audio_track(
 ) -> Result<AudioStream> {
     let stop_handle = Arc::new(AtomicBool::new(false));
     let stop_handle_clone = stop_handle.clone();
-    let stream = source::LiveKitStream::new(cx.background_executor(), track)
+    let stream = source::LiveKitStream::new(cx.background_executor(), track);
+    dbg!(stream.channels(), stream.sample_rate());
+
+    let stream = stream
         .stoppable()
         .periodic_access(Duration::from_millis(50), move |s| {
             if stop_handle.load(Ordering::Relaxed) {
                 s.stop();
             }
         });
-    audio::Audio::play_stream(stream, track.name() + &track.sid().to_string(), cx)
-        .context("Could not play audio")?;
+    dbg!(stream.channels(), stream.sample_rate());
+    audio::Audio::play_voip_stream(stream, track.name(), cx).context("Could not play audio")?;
 
     let on_drop = util::defer(move || {
         stop_handle_clone.store(true, Ordering::Relaxed);

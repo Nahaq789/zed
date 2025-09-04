@@ -188,7 +188,7 @@ impl Audio {
 
             // todo dvdsk keep the above here, move the rest back to livekit?
             let (replay, mut stream) = stream.replayable(REPLAY_DURATION);
-            replays.add_output_stream("local microphone".to_string(), replay);
+            replays.add_voip_stream("local microphone".to_string(), replay);
 
             loop {
                 let sampled: Vec<_> = stream
@@ -219,20 +219,20 @@ impl Audio {
         Ok(())
     }
 
-    pub fn play_stream(
+    pub fn play_voip_stream(
         stream_source: impl rodio::Source + Send + 'static,
         stream_name: String,
         cx: &mut App,
     ) -> anyhow::Result<()> {
+        dbg!(stream_source.sample_rate(), stream_source.channels());
         let (replay_source, source) = stream_source.replayable(REPLAY_DURATION);
 
         cx.update_default_global(|this: &mut Self, _cx| {
             let output_mixer = this
                 .ensure_output_exists()
                 .context("Could not get output mixer")?;
-            dbg!(source.sample_rate());
             output_mixer.add(source);
-            this.replays.add_output_stream(stream_name, replay_source);
+            this.replays.add_voip_stream(stream_name, replay_source);
             Ok(())
         })
     }
