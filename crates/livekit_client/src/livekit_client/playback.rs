@@ -47,7 +47,6 @@ pub(crate) fn play_remote_audio_track(
     let stop_handle = Arc::new(AtomicBool::new(false));
     let stop_handle_clone = stop_handle.clone();
     let stream = source::LiveKitStream::new(cx.background_executor(), track);
-    dbg!(stream.channels(), stream.sample_rate());
 
     let stream = stream
         .stoppable()
@@ -56,7 +55,6 @@ pub(crate) fn play_remote_audio_track(
                 s.stop();
             }
         });
-    dbg!(stream.channels(), stream.sample_rate());
     audio::Audio::play_voip_stream(stream, track.name(), cx).context("Could not play audio")?;
 
     let on_drop = util::defer(move || {

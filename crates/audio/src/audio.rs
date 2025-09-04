@@ -224,7 +224,6 @@ impl Audio {
         stream_name: String,
         cx: &mut App,
     ) -> anyhow::Result<()> {
-        dbg!(stream_source.sample_rate(), stream_source.channels());
         let (replay_source, source) = stream_source.replayable(REPLAY_DURATION);
 
         cx.update_default_global(|this: &mut Self, _cx| {
