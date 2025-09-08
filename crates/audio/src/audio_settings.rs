@@ -4,11 +4,7 @@ use anyhow::Result;
 use gpui::App;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-<<<<<<< HEAD
 use settings::{Settings, SettingsKey, SettingsSources, SettingsUi};
-=======
-use settings::{Settings, SettingsSources, SettingsStore};
->>>>>>> fa9846b1b9 (Refactor, more audio settings, limit replay to staff)
 
 #[derive(Clone, Default, Serialize, Deserialize, JsonSchema, Debug, SettingsUi)]
 pub struct AudioSettings {
