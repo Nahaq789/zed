@@ -650,7 +650,54 @@ impl ProjectItemRegistry {
                             Ok((project_entry_id, build_workspace_item))
                         }
                         Err(e) => {
-                            if e.error_code() == ErrorCode::Internal {
+                            if dbg!(e.error_code()) == ErrorCode::Internal {
+                                if let Some(io_err) = dbg!(e.downcast_ref::<std::io::Error>()) {
+                                    match io_err.kind() {
+                                        std::io::ErrorKind::NotFound => todo!(),
+                                        std::io::ErrorKind::PermissionDenied => todo!(),
+                                        std::io::ErrorKind::ConnectionRefused => todo!(),
+                                        std::io::ErrorKind::ConnectionReset => todo!(),
+                                        std::io::ErrorKind::HostUnreachable => todo!(),
+                                        std::io::ErrorKind::NetworkUnreachable => todo!(),
+                                        std::io::ErrorKind::ConnectionAborted => todo!(),
+                                        std::io::ErrorKind::NotConnected => todo!(),
+                                        std::io::ErrorKind::AddrInUse => todo!(),
+                                        std::io::ErrorKind::AddrNotAvailable => todo!(),
+                                        std::io::ErrorKind::NetworkDown => todo!(),
+                                        std::io::ErrorKind::BrokenPipe => todo!(),
+                                        std::io::ErrorKind::AlreadyExists => todo!(),
+                                        std::io::ErrorKind::WouldBlock => todo!(),
+                                        std::io::ErrorKind::ArgumentListTooLong => todo!(),
+                                        std::io::ErrorKind::NotADirectory => todo!(),
+                                        std::io::ErrorKind::TooManyLinks => todo!(),
+                                        std::io::ErrorKind::IsADirectory => todo!(),
+                                        std::io::ErrorKind::DirectoryNotEmpty => todo!(),
+                                        std::io::ErrorKind::Interrupted => todo!(),
+                                        std::io::ErrorKind::ReadOnlyFilesystem => todo!(),
+                                        std::io::ErrorKind::FilesystemLoop => todo!(),
+                                        std::io::ErrorKind::StaleNetworkFileHandle => todo!(),
+                                        std::io::ErrorKind::TimedOut => todo!(),
+                                        std::io::ErrorKind::WriteZero => todo!(),
+                                        std::io::ErrorKind::StorageFull => todo!(),
+                                        std::io::ErrorKind::NotSeekable => todo!(),
+                                        std::io::ErrorKind::QuotaExceeded => todo!(),
+                                        std::io::ErrorKind::FileTooLarge => todo!(),
+                                        std::io::ErrorKind::ResourceBusy => todo!(),
+                                        std::io::ErrorKind::ExecutableFileBusy => todo!(),
+                                        std::io::ErrorKind::Deadlock => todo!(),
+                                        std::io::ErrorKind::CrossesDevices => todo!(),
+                                        std::io::ErrorKind::InProgress => todo!(),
+                                        std::io::ErrorKind::OutOfMemory => todo!(),
+                                        std::io::ErrorKind::InvalidFilename => todo!(),
+                                        std::io::ErrorKind::Unsupported => todo!(),
+                                        std::io::ErrorKind::InvalidInput => todo!(),
+                                        std::io::ErrorKind::UnexpectedEof => todo!(),
+                                        std::io::ErrorKind::InvalidData => todo!(),
+                                        std::io::ErrorKind::Other => todo!(),
+                                        _ => todo!(),
+                                    }
+                                    dbg!(io_err.kind());
+                                };
                                 if let Some(abs_path) =
                                     entry_abs_path.as_deref().filter(|_| is_file)
                                 {
@@ -10461,8 +10508,30 @@ mod tests {
                 path: &ProjectPath,
                 cx: &mut App,
             ) -> Option<Task<anyhow::Result<Entity<Self>>>> {
-                if path.path.extension().unwrap() == "ipynb" {
-                    Some(cx.spawn(async move |cx| cx.new(|_| TestIpynbItem {})))
+                let extension = path.path.extension().unwrap();
+                if extension == "ipynb" {
+                    Some(Task::ready(Ok(cx.new(|_| TestIpynbItem {}))))
+                } else if extension == "ipynb_fail" {
+                    Some(Task::ready(
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Cannot open (test)",
+                        ))
+                        .with_context(|| format!("reading {}", path.path.display())),
+                    ))
+                } else if extension == "ipynb_fail_badly" {
+                    Some(Task::ready(
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::OutOfMemory,
+                            "Cannot open _badly_ (test)",
+                        ))
+                        .with_context(|| format!("reading {}", path.path.display())),
+                    ))
+                } else if extension == "ipynb_fail_unrelated" {
+                    Some(Task::ready(Err(anyhow::anyhow!(
+                        "unrelated failure when reading {}",
+                        path.path.display()
+                    ))))
                 } else {
                     None
                 }
@@ -10628,6 +10697,59 @@ mod tests {
             let handle = workspace
                 .update_in(cx, |workspace, window, cx| {
                     let project_path = (worktree_id, "three.txt");
+                    workspace.open_path(project_path, None, true, window, cx)
+                })
+                .await;
+            assert!(handle.is_err());
+        }
+
+        #[gpui::test]
+        async fn test_io_failures_when_opening_files(cx: &mut TestAppContext) {
+            init_test(cx);
+
+            cx.update(|cx| {
+                register_project_item::<TestIpynbItemView>(cx);
+            });
+
+            let fs = FakeFs::new(cx.executor());
+            fs.insert_tree(
+                "/root1",
+                json!({
+                    "one.ipynb_fail": "nothing",
+                    "two.ipynb_fail_badly": "nothing too",
+                    "one.ipynb_fail_unrelated": "nothing again",
+                }),
+            )
+            .await;
+
+            let project = Project::test(fs, ["root1".as_ref()], cx).await;
+            let (workspace, cx) =
+                cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+            let worktree_id = project.update(cx, |project, cx| {
+                project.worktrees(cx).next().unwrap().read(cx).id()
+            });
+
+            dbg!("@@@@@@@@@@@@@@@@@@");
+            let handle = workspace
+                .update_in(cx, |workspace, window, cx| {
+                    let project_path = (worktree_id, "one.ipynb_fail");
+                    workspace.open_path(project_path, None, true, window, cx)
+                })
+                .await;
+            assert!(handle.is_err());
+
+            let handle = workspace
+                .update_in(cx, |workspace, window, cx| {
+                    let project_path = (worktree_id, "two.ipynb_fail_badly");
+                    workspace.open_path(project_path, None, true, window, cx)
+                })
+                .await;
+            assert!(handle.is_err());
+
+            let handle = workspace
+                .update_in(cx, |workspace, window, cx| {
+                    let project_path = (worktree_id, "two.ipynb_fail_unrelated");
                     workspace.open_path(project_path, None, true, window, cx)
                 })
                 .await;
