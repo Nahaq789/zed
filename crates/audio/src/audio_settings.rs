@@ -19,14 +19,14 @@ pub struct AudioSettings {
     ///
     /// Use the new audio systems automatic gain control for your microphone.
     /// This affects how loud you sound to others.
-    #[serde(rename = "experimental.input_volume", default)]
+    #[serde(rename = "experimental.control_input_volume", default)]
     pub control_input_volume: bool,
     /// Requires 'rodio_audio: true'
     ///
     /// Use the new audio systems automatic gain control on everyone in the
     /// call. This makes call members who are too quite louder and those who are
     /// too loud quieter. This only affects how things sound for you.
-    #[serde(rename = "experimental.output_volume", default)]
+    #[serde(rename = "experimental.control_output_volume", default)]
     pub control_output_volume: bool,
 }
 
@@ -42,14 +42,14 @@ pub struct AudioSettingsContent {
     ///
     /// Use the new audio systems automatic gain control for your microphone.
     /// This affects how loud you sound to others.
-    #[serde(rename = "experimental.input_volume", default)]
+    #[serde(rename = "experimental.control_input_volume", default)]
     pub control_input_volume: bool,
     /// Requires 'rodio_audio: true'
     ///
     /// Use the new audio systems automatic gain control on everyone in the
     /// call. This makes call members who are too quite louder and those who are
     /// too loud quieter. This only affects how things sound for you.
-    #[serde(rename = "experimental.output_volume", default)]
+    #[serde(rename = "experimental.control_output_volume", default)]
     pub control_output_volume: bool,
 }
 
