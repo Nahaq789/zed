@@ -1388,7 +1388,6 @@ dependencies = [
  "async-tar",
  "collections",
  "crossbeam",
- "futures 0.3.31",
  "gpui",
  "libwebrtc",
  "log",
@@ -2618,6 +2617,7 @@ dependencies = [
  "audio",
  "client",
  "collections",
+ "feature_flags",
  "fs",
  "futures 0.3.31",
  "gpui",
@@ -9672,6 +9672,7 @@ dependencies = [
  "scap",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "settings",
  "sha2",
  "simplelog",
@@ -20550,8 +20551,11 @@ dependencies = [
  "language_tools",
  "languages",
  "libc",
+<<<<<<< HEAD
  "line_ending_selector",
  "livekit_client",
+=======
+>>>>>>> fa9846b1b9 (Refactor, more audio settings, limit replay to staff)
  "log",
  "markdown",
  "markdown_preview",

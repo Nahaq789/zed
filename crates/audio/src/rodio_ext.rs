@@ -156,7 +156,6 @@ where
     F: FnMut(&mut [Sample; N]),
 {
     fn current_span_len(&self) -> Option<usize> {
-        // TODO dvdsk this should be a spanless Source
         None
     }
 
@@ -217,7 +216,6 @@ where
     F: FnMut(&[Sample; N]),
 {
     fn current_span_len(&self) -> Option<usize> {
-        // TODO dvdsk this should be a spanless Source
         None
     }
 
@@ -262,7 +260,6 @@ impl<S: Source> Iterator for Replayable<S> {
 
 impl<S: Source> Source for Replayable<S> {
     fn current_span_len(&self) -> Option<usize> {
-        // Todo dvdsk should be spanless too
         self.inner.current_span_len()
     }
 
