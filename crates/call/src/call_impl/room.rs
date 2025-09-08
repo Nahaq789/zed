@@ -1328,8 +1328,7 @@ impl Room {
             .user_store
             .read(cx)
             .current_user()
-            .map(|user| user.name.clone())
-            .flatten()
+            .and_then(|user| user.name.clone())
             .unwrap_or_else(|| "unknown".to_string());
 
         cx.spawn(async move |this, cx| {
