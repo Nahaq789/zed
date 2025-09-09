@@ -128,8 +128,9 @@ actions!(
 actions!(
     dev,
     [
-        /// Stores last 30s of audio from everyone on the current call
-        /// in a tar file in the current working directory.
+        /// Stores last 30s of audio from zed staff using the experimental rodio
+        /// audio system (including yourself) on the current call in a tar file
+        /// in the current working directory.
         CaptureRecentAudio,
     ]
 );

@@ -391,15 +391,18 @@ fn send_to_livekit(
                 .map(|s| s.to_sample())
                 .collect();
 
-            frame_tx
+            if frame_tx
                 .unbounded_send(AudioFrame {
                     sample_rate: SAMPLE_RATE.get(),
                     num_channels: CHANNEL_COUNT.get() as u32,
                     samples_per_channel: sampled.len() as u32 / CHANNEL_COUNT.get() as u32,
                     data: Cow::Owned(sampled),
                 })
-                .context("Failed to send audio frame")
-                .log_err();
+                .is_err()
+            {
+                // must rx has dropped or is not consuming
+                break;
+            }
         }
     });
 }

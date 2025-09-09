@@ -177,7 +177,8 @@ impl Audio {
             .periodic_access(Duration::from_millis(100), move |agc_source| {
                 agc_source.set_enabled(LIVE_SETTINGS.control_input_volume.load(Ordering::Relaxed));
             })
-            .replayable(REPLAY_DURATION);
+            .replayable(REPLAY_DURATION)
+            .expect("REPLAY_DURATION is longer then 100ms");
 
         replays.add_voip_stream("local microphone".to_string(), replay);
         Ok(stream)
@@ -194,7 +195,8 @@ impl Audio {
             .periodic_access(Duration::from_millis(100), move |agc_source| {
                 agc_source.set_enabled(LIVE_SETTINGS.control_input_volume.load(Ordering::Relaxed));
             })
-            .replayable(REPLAY_DURATION);
+            .replayable(REPLAY_DURATION)
+            .expect("REPLAY_DURATION is longer then 100ms");
 
         cx.update_default_global(|this: &mut Self, _cx| {
             let output_mixer = this
