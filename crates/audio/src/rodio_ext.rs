@@ -572,7 +572,7 @@ mod tests {
             let n_yielded = replay.take_samples(ready).count();
 
             let max = source.sample_rate().get() * source.channels().get() as u32 * 2;
-            let margin = 16_000 / 10 * 1;
+            let margin = 16_000 / 10; // 100ms
             assert!(n_yielded as u32 >= max - margin);
         }
 
@@ -585,7 +585,7 @@ mod tests {
             assert_eq!(replay.by_ref().samples_ready(), 0);
 
             source.take(8000).count(); // half a second
-            let margin = 16_000 / 10 * 1;
+            let margin = 16_000 / 10; // 100ms
             let ready = replay.samples_ready();
             assert!(ready >= 8000 - margin);
         }
